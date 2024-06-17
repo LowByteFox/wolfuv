@@ -6,13 +6,14 @@ uv_loop_t *loop;
 void alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf) {
     buf->base = malloc(suggested);
     buf->len = suggested;
+    printf("alloc!\n");
 }
 
-void echo_write(uv_write_t *req, int status) {
+void echo_write(uv_buf_t *req, int status) {
     if (status) {
         fprintf(stderr, "Write error %s\n", uv_strerror(status));
     }
-    free(req);
+    free(req->base);
 }
 
 void on_read(struct wuv_tcp *client, ssize_t nread, const uv_buf_t *buf) {
@@ -22,13 +23,8 @@ void on_read(struct wuv_tcp *client, ssize_t nread, const uv_buf_t *buf) {
             wuv_close(client, NULL);
         }
     } else if (nread > 0) {
-        uv_write_t *req = (uv_write_t *) malloc(sizeof(uv_write_t));
         uv_buf_t wrbuf = uv_buf_init(buf->base, nread);
-        wuv_write(req, client, &wrbuf, 1, echo_write);
-    }
-
-    if (buf->base) {
-        free(buf->base);
+        wuv_write(client, &wrbuf, echo_write);
     }
 }
 
@@ -58,8 +54,8 @@ int main() {
 
     uv_ip4_addr("0.0.0.0", 7000, &addr);
 
-    wuv_tcp_bind(&server, (const struct sockaddr*)&addr), 0);
-    wuv_tcp_listen(&server, 128, on_connection);
+    wuv_tcp_bind(&server, (const struct sockaddr*)&addr, 0);
+    wuv_listen(&server, 128, on_connection);
 
     uv_run(loop, UV_RUN_DEFAULT);
     return 0;
