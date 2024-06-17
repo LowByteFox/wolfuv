@@ -81,6 +81,8 @@ wuv_accept(struct wuv_tcp *server, struct wuv_tcp *client)
         int ret = uv_accept((uv_stream_t*) &server->tcp,
             (uv_stream_t*) &client->tcp);
 
+        int ret2;
+
         if (ret != 0)
                 return ret;
 
@@ -91,7 +93,7 @@ wuv_accept(struct wuv_tcp *server, struct wuv_tcp *client)
                 return 1;
         }
 
-        if ((client->ret = wolfSSL_set_fd(client->ssl, client->fd))
+        if ((ret2 = wolfSSL_set_fd(client->ssl, client->fd))
             != WOLFSSL_SUCCESS) {
                 fprintf(stderr, "ERROR: Failed to set the file descriptor\n");
                 return 1;
@@ -99,8 +101,8 @@ wuv_accept(struct wuv_tcp *server, struct wuv_tcp *client)
         client->handle.data = client;
 
         uv_poll_init(client->loop, &client->handle, client->fd);
-        uv_poll_start(&client->handle, UV_READABLE | UV_WRITABLE,
-            wolfuv_on_poll);
+        uv_poll_start(&client->handle, UV_READABLE | UV_WRITABLE |
+            UV_DISCONNECT, wolfuv_on_poll);
 
         return ret;
 }
@@ -119,7 +121,6 @@ wuv_read_start(struct wuv_tcp *tcp, wuv_alloc_cb alloc_cb, wuv_read_cb read_cb)
         tcp->alloc_cb = alloc_cb;
         tcp->read_cb = read_cb;
         tcp->state = WUV_READ;
-        uv_poll_start(&tcp->handle, UV_READABLE, wolfuv_on_poll);
         return 0;
 }
 
@@ -137,7 +138,6 @@ wuv_write(struct wuv_tcp *tcp, uv_buf_t *buf, wuv_write_cb cb)
         tcp->state = WUV_WRITE;
         tcp->write_buffer = *buf;
         tcp->write_cb = cb; 
-        uv_poll_start(&tcp->handle, UV_WRITABLE | UV_READABLE, wolfuv_on_poll);
         return 0;
 }
 
@@ -151,66 +151,75 @@ wolfuv_on_connection(uv_stream_t *server, int status)
 static void
 wolfuv_on_poll(uv_poll_t *handle, int status, int events)
 {
+        int ret;
         struct wuv_tcp *tcp = handle->data;
+
+        if (events & UV_DISCONNECT) {
+                tcp->state = WUV_DISCONNECT;
+        }
 
         switch (tcp->state) {
         case WUV_ACCEPT:
                 if (events & UV_READABLE && events & UV_WRITABLE) {
-                        tcp->ret = wolfSSL_accept(tcp->ssl);
-                        tcp->err = wolfSSL_get_error(tcp->ssl, tcp->ret);
+                        ret = wolfSSL_accept(tcp->ssl);
+                        tcp->err = wolfSSL_get_error(tcp->ssl, ret);
                 }
 
-                if (tcp->ret == WOLFSSL_SUCCESS) {
+                if (ret == WOLFSSL_SUCCESS) {
                         tcp->err = WOLFSSL_ERROR_NONE;
                         tcp->state = WUV_IDLE;
-                        uv_poll_stop(&tcp->handle);
                 }
                 break;
         case WUV_READ:
                 if (events & UV_READABLE && tcp->err == WOLFSSL_ERROR_NONE) {
                         tcp->alloc_cb(tcp, USHRT_MAX + 1, &tcp->buffer);
-                        tcp->ret = 0;
+                        tcp->read = 0;
                         goto read;
                 }
 
                 if (events & UV_READABLE && tcp->err ==
                     WOLFSSL_ERROR_WANT_READ) {
 read:
-                        int ret = wolfSSL_read(tcp->ssl, tcp->buffer.base,
+                        ret = wolfSSL_read(tcp->ssl, tcp->buffer.base,
                             tcp->buffer.len);
                         tcp->err = wolfSSL_get_error(tcp->ssl, ret);
 
                         if (ret > 0) {
-                            tcp->ret += ret;
+                            tcp->read += ret;
                         }
                 }
 
                 if (tcp->err != WOLFSSL_ERROR_WANT_READ) {
                         tcp->err = WOLFSSL_ERROR_NONE;
-                        tcp->read_cb(tcp, tcp->ret, &tcp->buffer);
+                        tcp->read_cb(tcp, tcp->read, &tcp->buffer);
+                        tcp->read = 0;
                 }
                 break;
         case WUV_WRITE:
-                if (events & UV_WRITABLE) {
-                        tcp->ret = wolfSSL_write(tcp->ssl,
+                if (events & UV_WRITABLE && tcp->write_buffer.len > 0) {
+                        ret = wolfSSL_write(tcp->ssl,
                             tcp->write_buffer.base, tcp->write_buffer.len);
-                        tcp->err = wolfSSL_get_error(tcp->ssl, tcp->ret);
+                        tcp->err = wolfSSL_get_error(tcp->ssl, ret);
+
+                        if (ret > 0) {
+                            tcp->write_buffer.len -= ret;
+                        }
                 }
 
-                if (tcp->err != WOLFSSL_ERROR_WANT_WRITE) {
+                if (tcp->err != WOLFSSL_ERROR_WANT_WRITE
+                    || tcp->write_buffer.len <= 0) {
                         tcp->err = WOLFSSL_ERROR_NONE;
                         tcp->state = tcp->prev_state;
-                        if (tcp->state == WUV_IDLE)
-                                uv_poll_stop(&tcp->handle);
                 }
                 break;
         case WUV_DISCONNECT:
                 if (events & UV_READABLE && events & UV_WRITABLE) {
-                        tcp->ret = wolfSSL_shutdown(tcp->ssl);
-                        tcp->err = wolfSSL_get_error(tcp->ssl, tcp->ret);
+                        ret = wolfSSL_shutdown(tcp->ssl);
+                        tcp->err = wolfSSL_get_error(tcp->ssl, ret);
                 }
 
-                if (tcp->ret == WOLFSSL_SUCCESS) {
+                if (tcp->err != WOLFSSL_ERROR_WANT_WRITE
+                    && tcp->err != WOLFSSL_ERROR_WANT_READ) {
                         tcp->err = WOLFSSL_ERROR_NONE;
                         tcp->state = WUV_IDLE;
                         uv_poll_stop(&tcp->handle);
@@ -219,6 +228,7 @@ read:
 
                         if (tcp->close_cb != NULL)
                                 tcp->close_cb(tcp);
+                        tcp->read_cb(tcp, UV_EOF, &tcp->buffer);
                 }
                 break;
         case WUV_IDLE:

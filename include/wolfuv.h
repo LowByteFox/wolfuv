@@ -36,7 +36,7 @@ struct wuv_tcp {
 
         /* wolfSSL related variables */
         WOLFSSL *ssl;
-        int ret;
+        size_t read;
         int err;
         enum wuv_tcp_state state;
         enum wuv_tcp_state prev_state;

@@ -6,7 +6,6 @@ uv_loop_t *loop;
 void alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf) {
     buf->base = malloc(suggested);
     buf->len = suggested;
-    printf("alloc!\n");
 }
 
 void echo_write(uv_buf_t *req, int status) {
@@ -16,11 +15,18 @@ void echo_write(uv_buf_t *req, int status) {
     free(req->base);
 }
 
+void on_close(struct wuv_tcp *client) {
+    free(client);
+}
+
 void on_read(struct wuv_tcp *client, ssize_t nread, const uv_buf_t *buf) {
     if (nread < 0) {
         if (nread != UV_EOF) {
             fprintf(stderr, "Read error %s\n", uv_err_name(nread));
             wuv_close(client, NULL);
+        } else {
+            printf("Client disconnect!\n");
+            free(buf->base);
         }
     } else if (nread > 0) {
         uv_buf_t wrbuf = uv_buf_init(buf->base, nread);
