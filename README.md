@@ -5,4 +5,5 @@
 </p>
 <h3 align="center" style="font-size: 150%;">wolfuv is a library that adds TLS support for libuv using wolfSSL</h3>
 
-## wolfuv requires heavy testing in order to become stable, usage highly discouraged!
+<br>
+### wolfuv requires heavy testing in order to become stable, usage highly discouraged!
